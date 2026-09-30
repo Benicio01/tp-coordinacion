@@ -1,7 +1,6 @@
 import os
 import logging
 import signal
-import threading
 
 from common import middleware, message_protocol, fruit_item
 
@@ -87,18 +86,22 @@ def main():
         logging.info("SIGTERM received, stopping...")
         try:
             agg.input_exchange.stop_consuming()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Ignoring stop error during shutdown: {e}")
 
     signal.signal(signal.SIGTERM, handle_sigterm)
 
     try:
-        agg.start()  
+        agg.start()
     finally:
-        try: agg.input_exchange.close()
-        except Exception: pass
-        try: agg.output_queue.close()
-        except Exception: pass
+        try:
+            agg.input_exchange.close()
+        except Exception as e:
+            logging.warning(f"Ignoring close input error during shutdown: {e}")
+        try:
+            agg.output_queue.close()
+        except Exception as e:
+            logging.warning(f"Ignoring close output error during shutdown: {e}")
         logging.info("Shutdown graceful OK")
     return 0
 

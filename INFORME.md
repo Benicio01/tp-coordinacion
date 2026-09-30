@@ -17,7 +17,7 @@ El problema es que el fin de un cliente le llega a un solo Sum. Si ese Sum avisa
 se puede perder un dato que todavía está en camino. Ejemplo: SumA agarra
 el EOF pero SumB todavía tiene un mensaje sin procesar.
 
-Se resuelve de la siguente manera:
+Se resuelve de la siguiente manera:
 
 1. El sum que recibe el EOF no flushea, lo reenvía a un exchange de control
    que le envia una copia a cada Sum, con el total `N` que mandó el gateway.
@@ -63,21 +63,14 @@ Ese top va a la cola de resultados y el gateway se lo da al cliente correspondie
   de COUNTs, Agg espera esa cantidad de EOFs y Join espera esa cantidad
   de tops parciales. Join y Gateway son únicos por definicion del alcance del trabajo practico.
 
-## 6.Graceful shutdown (Sigterm)
+## 6. Graceful shutdown (SIGTERM)
 
-Se agarra con `signal.signal` en el hilo principal.
-El handler frena el consumo con `stop_consuming()` y después se cierran
-las conexiones con `close()`.
+Se agarra con `signal.signal` en el hilo principal. El handler frena el consumo y después se cierran las conexiones con `close()`. El orden siempre es: stop → join → close.
 
-- Agg y Join: tienen un solo consumo, así que el handler frena ese input
-  y después cierra input + output.
+- Agg y Join: tienen un solo consumo en el hilo principal. El handler frena ese input con `stop_consuming()` directo y después cierra input + output.
 
-- Sum: tiene dos consumos (datos en un hilo y control en el principal).
-  El handler frena los dos, se espera al hilo de datos con `join(timeout=2)`
-  y después se cierra todo: los 2 de consumo más el publisher de control
-  y los de datos (uno por cada Agg). El timeout=2 es para no quedarse esperando
-  para siempre: si el hilo tarda, se cierra todo igualmente y el container llega
-  a salir antes de los 5 segundos del stop.
+- Sum: tiene dos consumos — datos en un hilo secundario (input_thread) y control en el hilo principal. Se setea daemon=False para dejar en evidencia el cambio corregido por la devolucion del TP Nivelador y para que el hilo no muera abruptamente a mitad de `start_consuming()`. El handler de SIGTERM frena ambos consumos con `stop_consuming_threadsafe()`, porque `pika.BlockingConnection` no es thread-safe (se utiliza en los dos hilos por simetria). Después se hace join() sin timeout al hilo de datos y recién cuando salió se cierra todo: los 2 de consumo más el publisher de control y los de datos (uno por cada Agg).
 
-Se probó con `stop -t 5` en el escenario 5: todos salen con `Exited (0)`
-y `Shutdown graceful OK` en los logs.
+- stop_consuming_threadsafe(): método agregado a `_MessageMiddlewareRabbitMQBase` para que lo hereden tanto `MessageMiddlewareQueueRabbitMQ` como `MessageMiddlewareExchangeRabbitMQ`. En vez de frenar el consumo desde otro hilo, encola un callback con `conn.add_callback_threadsafe()` para que el hilo que está bloqueado en `start_consuming()` se frene a sí mismo. Si la conexión ya está cerrada, fallback a `stop_consuming()` directo.
+
+**RabbitMQ**: el container de Rabbit sale con `Exited (137)` porque tarda más de los 10s default en drenar las conexiones. Esto no es un error del código: todos los containers de Sum, Agg y Join salen con `Exited (0)` y Shutdown graceful OK antes de que Docker le dé SIGKILL a Rabbit. Si se quisiera evitar, habría que subir el stop_grace_period del compose para Rabbit, pero eso está fuera del alcance del código.

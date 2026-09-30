@@ -124,8 +124,8 @@ class SumFilter:
                 self.local_messages_received_count.pop(client_id, None)
                 self.peer_message_counts_by_sum.pop(client_id, None)
 
-    def process_data_messsage(self, message, ack, nack):
-        """Consume de input_queue (Queue competidora). Solo 1 Sum recibe cada EOF."""
+    def process_data_message(self, message, ack, nack):
+        """Consume de input_queue. Solo 1 Sum recibe cada EOF."""
         try:
             fields = message_protocol.internal.deserialize(message)
             if len(fields) == 3:
@@ -190,11 +190,18 @@ class SumFilter:
     def start(self):
         self.input_thread = threading.Thread(
             target=self.input_queue.start_consuming,
-            args=(self.process_data_messsage,),
-            daemon=True,
+            args=(self.process_data_message,),
+            name="sum-input",
+            daemon=False,
         )
         self.input_thread.start()
-        self.control_exchange.start_consuming(self.process_control_message)
+        try:
+            self.control_exchange.start_consuming(self.process_control_message)
+        finally:
+            try:
+                self.input_queue.stop_consuming_threadsafe()
+            except Exception as e:
+                logging.warning(f"Ignoring stop input error during shutdown: {e}")
 
 
 def main():
@@ -204,13 +211,13 @@ def main():
     def handle_sigterm(signum, frame):
         logging.info("SIGTERM received, stopping...")
         try:
-            sum_filter.input_queue.stop_consuming()
-        except Exception:
-            pass
+            sum_filter.control_exchange.stop_consuming_threadsafe()
+        except Exception as e:
+            logging.warning(f"Ignoring stop control error during shutdown: {e}")
         try:
-            sum_filter.control_exchange.stop_consuming()
-        except Exception:
-            pass
+            sum_filter.input_queue.stop_consuming_threadsafe()
+        except Exception as e:
+            logging.warning(f"Ignoring stop input error during shutdown: {e}")
 
     signal.signal(signal.SIGTERM, handle_sigterm)
 
@@ -219,9 +226,9 @@ def main():
     finally:
         try:
             if sum_filter.input_thread is not None:
-                sum_filter.input_thread.join(timeout=2)
-        except Exception:
-            pass
+                sum_filter.input_thread.join()
+        except Exception as e:
+            logging.warning(f"Ignoring join error during shutdown: {e}")
         for middleware in [
             sum_filter.input_queue,
             sum_filter.control_exchange,
@@ -230,8 +237,8 @@ def main():
         ]:
             try:
                 middleware.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"Ignoring close error during shutdown: {e}")
         logging.info("Shutdown graceful OK")
     return 0
 
